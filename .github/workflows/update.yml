@@ -395,4 +395,161 @@ jobs:
                       "operator": operator,
                       "message": message,
 
-                      "ovpn_base64
+                      "ovpn_base64": ovpn_base64
+                  }
+
+                  servers.append(server)
+
+              except Exception as e:
+
+                  print(
+                      "Skipping server:",
+                      str(e)
+                  )
+
+          # ---------------------------------------------------------
+          # Sort
+          # ---------------------------------------------------------
+          servers.sort(
+              key=lambda x: (
+                  x.get("ping", 999999)
+                  if x.get("ping", 0) > 0
+                  else 999999
+              )
+          )
+
+          # ---------------------------------------------------------
+          # Output
+          # ---------------------------------------------------------
+          result = {
+              "success": True,
+              "source": "VPNGate",
+              "updated_at": datetime.now(
+                  timezone.utc
+              ).isoformat(),
+
+              "count": len(servers),
+
+              "servers": servers
+          }
+
+          with open(
+              OUTPUT,
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              json.dump(
+                  result,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          print(
+              "Generated {} servers".format(
+                  len(servers)
+              )
+          )
+
+          print(
+              "Output size:",
+              len(
+                  json.dumps(
+                      result,
+                      ensure_ascii=False
+                  )
+              ),
+              "bytes"
+          )
+
+          if len(servers) == 0:
+              raise RuntimeError(
+                  "No valid TCP VPN servers found"
+              )
+          PY
+
+          python generate.py
+
+          echo ""
+          echo "servers.json:"
+          ls -lh servers.json
+
+          echo ""
+          echo "Server count:"
+          python -c "import json; d=json.load(open('servers.json')); print(d['count'])"
+
+      # =========================================================
+      # 5. Validate JSON
+      # =========================================================
+      - name: Validate servers.json
+        run: |
+          python - <<'PY'
+          import json
+
+          with open(
+              "servers.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+              data = json.load(f)
+
+          if not data.get("success"):
+              raise SystemExit(
+                  "servers.json success=false"
+              )
+
+          servers = data.get("servers", [])
+
+          if not servers:
+              raise SystemExit(
+                  "servers.json contains 0 servers"
+              )
+
+          print(
+              "Valid JSON"
+          )
+
+          print(
+              "Server count:",
+              len(servers)
+          )
+
+          print(
+              "First server:",
+              servers[0]
+          )
+          PY
+
+      # =========================================================
+      # 6. Commit and push
+      # =========================================================
+      - name: Commit and Push
+        run: |
+          set -e
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add servers.json
+
+          if git diff --cached --quiet; then
+            echo "No changes to servers.json"
+            exit 0
+          fi
+
+          git commit -m "Update VPN servers"
+
+          echo "Fetching latest main..."
+
+          git fetch origin main
+
+          echo "Rebasing..."
+
+          git rebase origin/main
+
+          echo "Pushing..."
+
+          git push origin HEAD:main
+
+          echo "VPN server database updated successfully."
