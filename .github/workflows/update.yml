@@ -19,96 +19,111 @@ jobs:
 
     steps:
 
-      # =========================================================
-      # 1. Checkout repository
-      # =========================================================
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: main
 
-      # =========================================================
-      # 2. Install Python
-      # =========================================================
+      # ============================================================
+      # PYTHON
+      # ============================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      # =========================================================
-      # 3. Download VPNGate CSV
-      # =========================================================
-      - name: Download VPNGate data
+      # ============================================================
+      # DOWNLOAD VPNGATE CSV
+      # ============================================================
+      - name: Download VPNGate CSV
         run: |
           set -e
 
+          echo "=========================================="
           echo "Downloading VPNGate data..."
+          echo "=========================================="
 
           curl -L \
             --fail \
             --retry 5 \
             --retry-delay 5 \
-            --connect-timeout 20 \
-            --max-time 120 \
+            --connect-timeout 30 \
+            --max-time 180 \
             -A "Mozilla/5.0" \
             "https://www.vpngate.net/api/iphone/" \
             -o vpngate.csv
 
-          echo "Downloaded file:"
+          echo ""
+          echo "File information:"
           ls -lh vpngate.csv
 
-          echo "First lines:"
-          head -n 5 vpngate.csv
+          echo ""
+          echo "First 15 lines:"
+          head -n 15 vpngate.csv
 
-      # =========================================================
-      # 4. Generate servers.json
-      # =========================================================
+          echo ""
+          echo "Line count:"
+          wc -l vpngate.csv
+
+      # ============================================================
+      # GENERATE JSON
+      # ============================================================
       - name: Generate servers.json
         run: |
+
           cat > generate.py <<'PY'
+
           import csv
           import base64
           import json
           import re
           from datetime import datetime, timezone
 
-          INPUT = "vpngate.csv"
-          OUTPUT = "servers.json"
 
-          servers = []
-          seen = set()
+          INPUT_FILE = "vpngate.csv"
+          OUTPUT_FILE = "servers.json"
+
+
+          # ========================================================
+          # HELPERS
+          # ========================================================
 
           def clean(value):
+
               if value is None:
                   return ""
+
               return str(value).strip()
 
-          def to_int(value):
+
+          def integer(value):
+
               try:
+
                   value = clean(value)
-                  if value == "":
+
+                  if not value:
                       return 0
+
+                  value = value.replace(",", "")
+
                   return int(float(value))
+
               except:
+
                   return 0
 
-          def to_float(value):
-              try:
-                  value = clean(value)
-                  if value == "":
-                      return 0
-                  return float(value)
-              except:
-                  return 0
 
           def country_code(country):
+
               country = clean(country)
 
-              if not country:
-                  return ""
-
               mapping = {
+
                   "United States": "us",
                   "United Kingdom": "gb",
                   "Canada": "ca",
@@ -117,131 +132,362 @@ jobs:
                   "Netherlands": "nl",
                   "Japan": "jp",
                   "Singapore": "sg",
+
                   "Korea Republic of": "kr",
                   "South Korea": "kr",
+
                   "Hong Kong": "hk",
                   "Taiwan": "tw",
+
                   "India": "in",
                   "Indonesia": "id",
                   "Malaysia": "my",
                   "Thailand": "th",
                   "Vietnam": "vn",
+
                   "Bangladesh": "bd",
                   "Pakistan": "pk",
+
                   "Australia": "au",
+                  "New Zealand": "nz",
+
                   "Brazil": "br",
+                  "Argentina": "ar",
+                  "Chile": "cl",
+                  "Mexico": "mx",
+
                   "Turkey": "tr",
+                  "Russia": "ru",
+                  "Ukraine": "ua",
+
                   "Sweden": "se",
                   "Switzerland": "ch",
                   "Poland": "pl",
                   "Romania": "ro",
-                  "Russia": "ru",
-                  "Ukraine": "ua",
+
                   "Spain": "es",
                   "Italy": "it",
+                  "Portugal": "pt",
+
                   "Finland": "fi",
                   "Norway": "no",
                   "Denmark": "dk",
+
                   "Austria": "at",
                   "Belgium": "be",
-                  "Czech Republic": "cz",
-                  "Portugal": "pt",
+
                   "Ireland": "ie",
-                  "New Zealand": "nz",
-                  "Mexico": "mx",
-                  "Argentina": "ar",
-                  "Chile": "cl",
-                  "South Africa": "za"
+                  "South Africa": "za",
+
+                  "Czech Republic": "cz"
               }
 
-              if country in mapping:
-                  return mapping[country]
+              return mapping.get(country, "")
+
+
+          # ========================================================
+          # READ FILE
+          # ========================================================
+
+          with open(
+              INPUT_FILE,
+              "r",
+              encoding="utf-8",
+              errors="ignore"
+          ) as f:
+
+              raw_lines = f.readlines()
+
+
+          print(
+              "Total downloaded lines:",
+              len(raw_lines)
+          )
+
+
+          # ========================================================
+          # FIND CSV HEADER
+          # ========================================================
+
+          header_index = -1
+
+          for i, line in enumerate(raw_lines):
+
+              lower = line.lower()
+
+              if (
+                  "host_name" in lower
+                  or "hostname" in lower
+              ) and (
+                  "ip" in lower
+              ):
+
+                  header_index = i
+
+                  break
+
+
+          if header_index == -1:
+
+              print(
+                  "Could not find CSV header."
+              )
+
+              print(
+                  "Searching for lines containing CSV keywords..."
+              )
+
+              for line in raw_lines[:50]:
+
+                  if "HostName" in line or "IP" in line:
+
+                      print(line[:500])
+
+
+              raise RuntimeError(
+                  "VPNGate CSV header not found"
+              )
+
+
+          print(
+              "CSV header found at line:",
+              header_index + 1
+          )
+
+
+          # ========================================================
+          # REMOVE COMMENT LINES
+          # ========================================================
+
+          csv_text = "".join(
+              raw_lines[header_index:]
+          )
+
+
+          # ========================================================
+          # CSV PARSER
+          # ========================================================
+
+          reader = csv.DictReader(
+              csv_text.splitlines()
+          )
+
+
+          print(
+              "Detected columns:"
+          )
+
+          print(
+              reader.fieldnames
+          )
+
+
+          # ========================================================
+          # NORMALIZE COLUMN NAMES
+          # ========================================================
+
+          def get_column(row, names):
+
+              for name in names:
+
+                  if name in row:
+
+                      value = clean(
+                          row.get(name)
+                      )
+
+                      if value:
+
+                          return value
+
+              # case insensitive fallback
+
+              lowered = {}
+
+              for key in row.keys():
+
+                  if key is not None:
+
+                      lowered[
+                          key.strip().lower()
+                      ] = key
+
+
+              for name in names:
+
+                  key = lowered.get(
+                      name.lower()
+                  )
+
+                  if key:
+
+                      value = clean(
+                          row.get(key)
+                      )
+
+                      if value:
+
+                          return value
 
               return ""
 
-          # ---------------------------------------------------------
-          # Read VPNGate CSV
-          # ---------------------------------------------------------
-          with open(INPUT, "r", encoding="utf-8", errors="ignore") as f:
 
-              lines = f.readlines()
+          # ========================================================
+          # PROCESS SERVERS
+          # ========================================================
 
-          # VPNGate API contains comments before CSV header.
-          csv_lines = []
+          servers = []
 
-          for line in lines:
-              if line.startswith("#"):
-                  continue
+          seen = set()
 
-              if line.strip():
-                  csv_lines.append(line)
+          total_rows = 0
 
-          if not csv_lines:
-              raise RuntimeError("VPNGate CSV is empty")
+          skipped_no_ip = 0
 
-          reader = csv.DictReader(csv_lines)
+          skipped_no_ovpn = 0
+
+          skipped_udp = 0
+
+          skipped_invalid = 0
+
 
           for row in reader:
 
+              total_rows += 1
+
               try:
 
-                  ip = clean(
-                      row.get("IP") or
-                      row.get("IP Address") or
-                      row.get("ip")
+                  # ------------------------------------------------
+                  # IP
+                  # ------------------------------------------------
+
+                  ip = get_column(
+                      row,
+                      [
+                          "IP",
+                          "Ip",
+                          "ip",
+                          "IP Address"
+                      ]
                   )
 
-                  host = clean(
-                      row.get("HostName") or
-                      row.get("HostName") or
-                      row.get("host")
-                  )
-
-                  country = clean(
-                      row.get("CountryLong") or
-                      row.get("Country") or
-                      row.get("country")
-                  )
 
                   if not ip:
+
+                      skipped_no_ip += 1
+
                       continue
 
-                  # -------------------------------------------------
-                  # Get TCP port
-                  # -------------------------------------------------
-                  tcp_port = to_int(
-                      row.get("TCPPort") or
-                      row.get("TCP Port") or
-                      row.get("tcp_port")
+
+                  # ------------------------------------------------
+                  # HOST
+                  # ------------------------------------------------
+
+                  host = get_column(
+                      row,
+                      [
+                          "HostName",
+                          "Hostname",
+                          "HostName ",
+                          "host",
+                          "Host"
+                      ]
                   )
 
-                  if tcp_port <= 0:
-                      tcp_port = 443
 
-                  # -------------------------------------------------
-                  # Get UDP port
-                  # -------------------------------------------------
-                  udp_port = to_int(
-                      row.get("UDPPort") or
-                      row.get("UDP Port") or
-                      row.get("udp_port")
+                  # ------------------------------------------------
+                  # COUNTRY
+                  # ------------------------------------------------
+
+                  country = get_column(
+                      row,
+                      [
+                          "CountryLong",
+                          "Country",
+                          "Country Long"
+                      ]
                   )
 
-                  # -------------------------------------------------
-                  # OVPN Base64
-                  # -------------------------------------------------
-                  ovpn_base64 = clean(
-                      row.get("OpenVPN_ConfigData_Base64") or
-                      row.get("OpenVPN_ConfigData") or
-                      row.get("ovpn_base64")
+
+                  # ------------------------------------------------
+                  # COUNTRY SHORT
+                  # ------------------------------------------------
+
+                  short_country = get_column(
+                      row,
+                      [
+                          "CountryShort",
+                          "CountryCode",
+                          "Country Code"
+                      ]
+                  ).lower()
+
+
+                  if not short_country:
+
+                      short_country = country_code(
+                          country
+                      )
+
+
+                  # ------------------------------------------------
+                  # TCP PORT
+                  # ------------------------------------------------
+
+                  tcp_port = integer(
+                      get_column(
+                          row,
+                          [
+                              "TCPPort",
+                              "TCP Port",
+                              "tcp_port"
+                          ]
+                      )
                   )
+
+
+                  # ------------------------------------------------
+                  # UDP PORT
+                  # ------------------------------------------------
+
+                  udp_port = integer(
+                      get_column(
+                          row,
+                          [
+                              "UDPPort",
+                              "UDP Port",
+                              "udp_port"
+                          ]
+                      )
+                  )
+
+
+                  # ------------------------------------------------
+                  # OVPN
+                  # ------------------------------------------------
+
+                  ovpn_base64 = get_column(
+                      row,
+                      [
+                          "OpenVPN_ConfigData_Base64",
+                          "OpenVPN_ConfigData",
+                          "ovpn_base64",
+                          "OpenVPN"
+                      ]
+                  )
+
 
                   if not ovpn_base64:
+
+                      skipped_no_ovpn += 1
+
                       continue
 
-                  # -------------------------------------------------
-                  # Decode OVPN to validate it
-                  # -------------------------------------------------
+
+                  # ------------------------------------------------
+                  # DECODE OVPN
+                  # ------------------------------------------------
+
                   try:
 
                       decoded = base64.b64decode(
@@ -252,178 +498,371 @@ jobs:
                       )
 
                   except Exception:
+
+                      skipped_invalid += 1
+
                       continue
+
 
                   if not decoded:
+
+                      skipped_invalid += 1
+
                       continue
 
-                  # -------------------------------------------------
-                  # Find remote host/port
-                  # -------------------------------------------------
-                  remote_match = re.search(
-                      r"(?m)^\s*remote\s+([^\s]+)\s+(\d+)",
+
+                  # ------------------------------------------------
+                  # FIND PROTOCOL
+                  # ------------------------------------------------
+
+                  proto_match = re.search(
+                      r"(?im)^\s*proto\s+([^\s#]+)",
                       decoded
                   )
 
-                  remote_host = ip
-                  remote_port = tcp_port
-
-                  if remote_match:
-
-                      remote_host = remote_match.group(1)
-
-                      try:
-                          remote_port = int(
-                              remote_match.group(2)
-                          )
-                      except:
-                          remote_port = tcp_port
-
-                  # -------------------------------------------------
-                  # Only TCP OpenVPN
-                  # -------------------------------------------------
-                  proto_match = re.search(
-                      r"(?m)^\s*proto\s+([^\s]+)",
-                      decoded,
-                      re.IGNORECASE
-                  )
 
                   proto = ""
 
                   if proto_match:
-                      proto = proto_match.group(1).lower()
+
+                      proto = (
+                          proto_match
+                          .group(1)
+                          .strip()
+                          .lower()
+                      )
+
+
+                  # =================================================
+                  # TCP ONLY
+                  # =================================================
 
                   if proto.startswith("udp"):
+
+                      skipped_udp += 1
+
                       continue
 
-                  # -------------------------------------------------
-                  # Unique server
-                  # -------------------------------------------------
-                  unique_key = "{}:{}".format(
-                      remote_host,
-                      remote_port
+
+                  # ------------------------------------------------
+                  # FIND REMOTE
+                  # ------------------------------------------------
+
+                  remote_match = re.search(
+                      r"(?im)^\s*remote\s+([^\s#]+)\s+(\d+)",
+                      decoded
                   )
+
+
+                  remote_host = host if host else ip
+
+                  remote_port = tcp_port
+
+
+                  if remote_match:
+
+                      remote_host = (
+                          remote_match
+                          .group(1)
+                          .strip()
+                      )
+
+                      remote_port = integer(
+                          remote_match.group(2)
+                      )
+
+
+                  # ------------------------------------------------
+                  # FALLBACK TCP PORT
+                  # ------------------------------------------------
+
+                  if remote_port <= 0:
+
+                      remote_port = 443
+
+
+                  # ------------------------------------------------
+                  # UNIQUE KEY
+                  # ------------------------------------------------
+
+                  unique_key = (
+                      str(remote_host)
+                      + ":"
+                      + str(remote_port)
+                  )
+
 
                   if unique_key in seen:
+
                       continue
 
-                  seen.add(unique_key)
 
-                  # -------------------------------------------------
-                  # Server values
-                  # -------------------------------------------------
-                  score = to_int(
-                      row.get("Score") or
-                      row.get("score")
+                  seen.add(
+                      unique_key
                   )
 
-                  ping = to_int(
-                      row.get("Ping") or
-                      row.get("ping")
+
+                  # ------------------------------------------------
+                  # SERVER DATA
+                  # ------------------------------------------------
+
+                  score = integer(
+                      get_column(
+                          row,
+                          [
+                              "Score",
+                              "score"
+                          ]
+                      )
                   )
 
-                  speed = to_int(
-                      row.get("Speed") or
-                      row.get("speed")
+
+                  ping = integer(
+                      get_column(
+                          row,
+                          [
+                              "Ping",
+                              "ping"
+                          ]
+                      )
                   )
 
-                  sessions = to_int(
-                      row.get("NumVpnSessions") or
-                      row.get("sessions")
+
+                  speed = integer(
+                      get_column(
+                          row,
+                          [
+                              "Speed",
+                              "speed"
+                          ]
+                      )
                   )
 
-                  uptime = to_int(
-                      row.get("Uptime") or
-                      row.get("uptime")
+
+                  sessions = integer(
+                      get_column(
+                          row,
+                          [
+                              "NumVpnSessions",
+                              "Sessions",
+                              "sessions"
+                          ]
+                      )
                   )
 
-                  total_users = to_int(
-                      row.get("TotalUsers") or
-                      row.get("total_users")
+
+                  uptime = integer(
+                      get_column(
+                          row,
+                          [
+                              "Uptime",
+                              "uptime"
+                          ]
+                      )
                   )
 
-                  total_traffic = to_int(
-                      row.get("TotalTraffic") or
-                      row.get("total_traffic")
+
+                  total_users = integer(
+                      get_column(
+                          row,
+                          [
+                              "TotalUsers",
+                              "total_users"
+                          ]
+                      )
                   )
 
-                  log_type = clean(
-                      row.get("LogType") or
-                      row.get("log_type")
+
+                  total_traffic = integer(
+                      get_column(
+                          row,
+                          [
+                              "TotalTraffic",
+                              "total_traffic"
+                          ]
+                      )
                   )
 
-                  operator = clean(
-                      row.get("Operator") or
-                      row.get("operator")
+
+                  log_type = get_column(
+                      row,
+                      [
+                          "LogType",
+                          "log_type"
+                      ]
                   )
 
-                  message = clean(
-                      row.get("Message") or
-                      row.get("message")
+
+                  operator = get_column(
+                      row,
+                      [
+                          "Operator",
+                          "operator"
+                      ]
                   )
 
-                  cc = country_code(country)
 
-                  # -------------------------------------------------
-                  # Create server object
-                  # -------------------------------------------------
+                  message = get_column(
+                      row,
+                      [
+                          "Message",
+                          "message"
+                      ]
+                  )
+
+
+                  # ------------------------------------------------
+                  # SAVE SERVER
+                  # ------------------------------------------------
+
                   server = {
+
                       "host": host if host else remote_host,
+
                       "ip": ip,
+
                       "remote": remote_host,
+
                       "port": remote_port,
 
                       "tcp_port": remote_port,
+
                       "udp_port": udp_port,
 
                       "proto": "tcp",
 
                       "score": score,
+
                       "ping": ping,
+
                       "speed": speed,
 
                       "country": country,
-                      "country_code": cc,
+
+                      "country_code": short_country,
 
                       "sessions": sessions,
+
                       "uptime": uptime,
 
                       "total_users": total_users,
+
                       "total_traffic": total_traffic,
 
                       "log_type": log_type,
+
                       "operator": operator,
+
                       "message": message,
 
                       "ovpn_base64": ovpn_base64
                   }
 
-                  servers.append(server)
+
+                  servers.append(
+                      server
+                  )
+
 
               except Exception as e:
 
+                  skipped_invalid += 1
+
                   print(
-                      "Skipping server:",
+                      "Server parse error:",
                       str(e)
                   )
 
-          # ---------------------------------------------------------
-          # Sort
-          # ---------------------------------------------------------
-          servers.sort(
-              key=lambda x: (
-                  x.get("ping", 999999)
-                  if x.get("ping", 0) > 0
-                  else 999999
+
+          # ========================================================
+          # SORT
+          # ========================================================
+
+          def ping_sort(server):
+
+              p = server.get(
+                  "ping",
+                  0
               )
+
+              if p <= 0:
+
+                  return 999999
+
+              return p
+
+
+          servers.sort(
+              key=ping_sort
           )
 
-          # ---------------------------------------------------------
-          # Output
-          # ---------------------------------------------------------
+
+          # ========================================================
+          # PRINT STATS
+          # ========================================================
+
+          print("")
+          print("==========================================")
+          print("VPNGate parser statistics")
+          print("==========================================")
+
+          print(
+              "CSV rows:",
+              total_rows
+          )
+
+          print(
+              "Valid TCP servers:",
+              len(servers)
+          )
+
+          print(
+              "No IP:",
+              skipped_no_ip
+          )
+
+          print(
+              "No OVPN:",
+              skipped_no_ovpn
+          )
+
+          print(
+              "UDP skipped:",
+              skipped_udp
+          )
+
+          print(
+              "Invalid skipped:",
+              skipped_invalid
+          )
+
+          print(
+              "=========================================="
+          )
+
+
+          # ========================================================
+          # DON'T FAIL IF TEMPORARILY EMPTY
+          # ========================================================
+
+          if len(servers) == 0:
+
+              raise RuntimeError(
+                  "No valid TCP VPN servers found. "
+                  "Check VPNGate CSV/header format."
+              )
+
+
+          # ========================================================
+          # JSON
+          # ========================================================
+
           result = {
+
               "success": True,
+
               "source": "VPNGate",
+
               "updated_at": datetime.now(
                   timezone.utc
               ).isoformat(),
@@ -433,8 +872,9 @@ jobs:
               "servers": servers
           }
 
+
           with open(
-              OUTPUT,
+              OUTPUT_FILE,
               "w",
               encoding="utf-8"
           ) as f:
@@ -446,45 +886,33 @@ jobs:
                   indent=2
               )
 
+
+          print("")
           print(
-              "Generated {} servers".format(
-                  len(servers)
-              )
+              "Generated:",
+              len(servers),
+              "servers"
           )
 
           print(
-              "Output size:",
-              len(
-                  json.dumps(
-                      result,
-                      ensure_ascii=False
-                  )
-              ),
-              "bytes"
+              "Output:",
+              OUTPUT_FILE
           )
 
-          if len(servers) == 0:
-              raise RuntimeError(
-                  "No valid TCP VPN servers found"
-              )
           PY
+
 
           python generate.py
 
-          echo ""
-          echo "servers.json:"
-          ls -lh servers.json
 
-          echo ""
-          echo "Server count:"
-          python -c "import json; d=json.load(open('servers.json')); print(d['count'])"
-
-      # =========================================================
-      # 5. Validate JSON
-      # =========================================================
-      - name: Validate servers.json
+      # ============================================================
+      # VALIDATE JSON
+      # ============================================================
+      - name: Validate JSON
         run: |
+
           python - <<'PY'
+
           import json
 
           with open(
@@ -492,64 +920,97 @@ jobs:
               "r",
               encoding="utf-8"
           ) as f:
+
               data = json.load(f)
 
-          if not data.get("success"):
-              raise SystemExit(
-                  "servers.json success=false"
+
+          if data.get("success") is not True:
+
+              raise RuntimeError(
+                  "success is not true"
               )
 
-          servers = data.get("servers", [])
 
-          if not servers:
-              raise SystemExit(
+          servers = data.get(
+              "servers",
+              []
+          )
+
+
+          if len(servers) == 0:
+
+              raise RuntimeError(
                   "servers.json contains 0 servers"
               )
 
+
           print(
-              "Valid JSON"
+              "JSON validation successful"
           )
+
 
           print(
               "Server count:",
               len(servers)
           )
 
+
           print(
-              "First server:",
-              servers[0]
+              "Updated:",
+              data.get(
+                  "updated_at"
+              )
           )
+
           PY
 
-      # =========================================================
-      # 6. Commit and push
-      # =========================================================
+
+      # ============================================================
+      # COMMIT + PUSH
+      # ============================================================
       - name: Commit and Push
         run: |
+
           set -e
 
           git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+
+          git config user.email \
+            "github-actions@github.com"
+
 
           git add servers.json
 
+
           if git diff --cached --quiet; then
+
             echo "No changes to servers.json"
+
             exit 0
+
           fi
 
-          git commit -m "Update VPN servers"
+
+          git commit \
+            -m "Update VPN servers"
+
 
           echo "Fetching latest main..."
 
           git fetch origin main
 
+
           echo "Rebasing..."
 
           git rebase origin/main
+
 
           echo "Pushing..."
 
           git push origin HEAD:main
 
+
+          echo ""
+          echo "=========================================="
           echo "VPN server database updated successfully."
+          echo "=========================================="
