@@ -1,0 +1,170 @@
+name: Update VPNGate Servers
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  update:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download VPNGate CSV
+        run: |
+          curl -L \
+            -A "Mozilla/5.0" \
+            "https://www.vpngate.net/api/iphone/" \
+            -o vpngate.csv
+
+      - name: Convert CSV to JSON
+        run: |
+          python3 <<'PY'
+
+          import csv
+          import json
+          from datetime import datetime, timezone
+
+          servers = []
+
+          with open(
+              "vpngate.csv",
+              "r",
+              encoding="utf-8",
+              errors="ignore"
+          ) as f:
+
+              for row in csv.reader(f):
+
+                  if not row:
+                      continue
+
+                  if row[0].startswith("#"):
+                      continue
+
+                  if len(row) < 15:
+                      continue
+
+                  host = row[0]
+                  ip = row[1]
+
+                  try:
+                      score = int(row[2] or 0)
+                  except:
+                      score = 0
+
+                  try:
+                      ping = int(row[3] or 0)
+                  except:
+                      ping = 0
+
+                  try:
+                      speed = int(row[4] or 0)
+                  except:
+                      speed = 0
+
+                  country = row[5]
+                  country_code = row[6].upper()
+
+                  try:
+                      sessions = int(row[7] or 0)
+                  except:
+                      sessions = 0
+
+                  try:
+                      uptime = int(row[8] or 0)
+                  except:
+                      uptime = 0
+
+                  ovpn = row[14]
+
+                  if not ip:
+                      continue
+
+                  if not ovpn:
+                      continue
+
+                  speed_mbps = round(
+                      speed * 8 / 1000000,
+                      2
+                  )
+
+                  servers.append({
+                      "host": host,
+                      "ip": ip,
+                      "country": country,
+                      "country_code": country_code,
+                      "ping": ping,
+                      "speed": speed,
+                      "speed_mbps": speed_mbps,
+                      "score": score,
+                      "sessions": sessions,
+                      "uptime": uptime,
+                      "ovpn_base64": ovpn
+                  })
+
+          # Remove duplicate IP
+          unique = {}
+          
+          for server in servers:
+              unique[server["ip"]] = server
+
+          servers = list(unique.values())
+
+          # Lowest ping first
+          servers.sort(
+              key=lambda x: (
+                  x["ping"] == 0,
+                  x["ping"]
+              )
+          )
+
+          output = {
+              "success": True,
+              "source": "VPNGate",
+              "updated_at": datetime.now(
+                  timezone.utc
+              ).isoformat(),
+              "count": len(servers),
+              "servers": servers
+          }
+
+          with open(
+              "servers.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              json.dump(
+                  output,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          PY
+
+      - name: Commit JSON
+        run: |
+
+          git config user.name "github-actions"
+
+          git config user.email \
+            "github-actions@github.com"
+
+          git add servers.json
+
+          git diff --cached --quiet || \
+            git commit -m "Update VPN servers"
+
+          git push
